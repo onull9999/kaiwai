@@ -1,0 +1,634 @@
+<!DOCTYPE html>  
+<html lang="ja">  
+<head>  
+  <meta charset="UTF-8" />  
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />  
+  <title>MIDI Visualizer - Complete Fix</title>  
+  <style>  
+    /* スタイルは変更なし（黒背景を維持） */  
+    * { margin: 0; padding: 0; box-sizing: border-box; }  
+    body { background: #000; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; width: 100vw; height: 100vh; }  
+    #app { width: 100%; height: 100%; display: flex; flex-direction: column; }  
+    .controls { display: flex; gap: 10px; padding: 10px; background: #000; align-items: center; z-index: 100; border-bottom: 1px solid #222; flex-wrap: wrap; }  
+    .controls button { padding: 8px 16px; background: #000; color: #fff; border: 1px solid #333; cursor: pointer; font-size: 13px; border-radius: 4px; transition: all 0.2s; }  
+    .controls button:hover { background: #111; border-color: #555; }  
+    .controls button.active { background: #fff; color: #000; border-color: #fff; }  
+    .controls input[type="file"] { display: none; }  
+    .controls label { padding: 8px 16px; background: #000; border: 1px solid #333; cursor: pointer; font-size: 13px; border-radius: 4px; color: #fff; }  
+    .info { margin-left: auto; font-size: 11px; color: #666; display: flex; gap: 15px; }
+
+    #main-container { flex: 1; display: flex; overflow: hidden; position: relative; }  
+    #visualizer { flex: 1; position: relative; background: #000; overflow: hidden; }
+
+    #editor-panel { width: 0; background: #000; border-left: 0px solid #222; display: flex; flex-direction: column; gap: 20px; z-index: 101; overflow-y: auto; overflow-x: hidden; transition: width 0.3s ease; white-space: nowrap; }  
+    #editor-panel.active { width: 280px; border-left: 1px solid #222; padding: 20px; }
+
+    .panel-section { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }  
+    .panel-section h3 { font-size: 10px; color: #444; text-transform: uppercase; letter-spacing: 2px; border-bottom: 1px solid #222; padding-bottom: 5px; margin-bottom: 5px; }  
+    .panel-section label { font-size: 11px; color: #888; }  
+    .panel-section select, .panel-section input[type="color"] { background: #000; color: #fff; border: 1px solid #333; padding: 6px; font-size: 13px; width: 100%; border-radius: 4px; }
+
+    .track-container { position: absolute; background: transparent; overflow: hidden; border: 1px solid transparent; }  
+    .editor-mode-active .track-container { border: 1px solid #222; background: #050505; }  
+    .track-container.selected { border: 1px solid #fff !important; z-index: 10; }
+
+    .track-header { display: none; padding: 4px 10px; background: #111; font-size: 10px; color: #888; cursor: move; user-select: none; }  
+    .editor-mode-active .track-header { display: block; }
+
+    .track-canvas { width: 100%; height: 100%; display: block; }
+
+    .resize-handle { display: none; position: absolute; width: 10px; height: 10px; background: #fff; right: 0; bottom: 0; cursor: nwse-resize; z-index: 5; }  
+    .editor-mode-active .resize-handle { display: block; }
+
+    .drop-zone { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; color: #111; font-size: 14px; pointer-events: none; letter-spacing: 5px; font-weight: bold; }
+
+    #tempoview-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 240px; height: 240px; pointer-events: none; display: none; z-index: 50; }  
+    #tempoview-overlay.active { display: block; }  
+    #tempoCanvas { width: 100%; height: 100%; }  
+  </style>  
+</head>
+
+<body>  
+  <div id="app">  
+    <div class="controls">  
+      <label>LOAD MIDI <input type="file" id="fileInput" accept=".mid,.midi" /></label>  
+      <button id="playBtn" disabled>PLAY</button>  
+      <button id="stopBtn" disabled>STOP</button>  
+      <button id="editorBtn">setting</button>  
+      <button id="tempoViewBtn">tempo view</button>  
+      <div class="info">  
+        <span id="trackInfo">TRACKS: 0</span>  
+        <span id="measureInfo">: --</span>  
+        <span id="bpmInfo">BPM: --</span>  
+      </div>  
+    </div>
+
+    <div id="main-container">  
+      <div id="visualizer">  
+        <div class="drop-zone">MONOCHROME WORLD</div>  
+        <div id="tempoview-overlay">  
+          <canvas id="tempoCanvas" width="240" height="240"></canvas>  
+        </div>  
+      </div>
+
+      <div id="editor-panel">  
+        <h2 style="font-size:12px;margin-bottom:15px;letter-spacing:2px;border-bottom:1px solid #222;padding-bottom:10px;color:#fff;">  
+          TRACK CONFIG  
+        </h2>
+
+        <div id="no-track-selected" style="font-size:11px;color:#444;text-align:center;margin-top:20px;">  
+          Select a track to edit  
+        </div>
+
+        <div id="track-controls-ui" style="display:none;">  
+          <div class="panel-section">  
+            <h3>Visuals</h3>  
+            <label>MODE</label>  
+            <select id="setting-mode">  
+              <option value="piano">PIANO ROLL</option>  
+              <option value="drum">DRUM (WAVE EFFECT)</option>  
+            </select>  
+            <label>COLOR</label>  
+            <input type="color" id="setting-color" value="#ffffff" />  
+          </div>
+
+          <div class="panel-section">  
+            <h3>Audio</h3>  
+            <label>WAVEFORM</label>  
+            <select id="setting-wave">  
+              <option value="triangle">TRIANGLE</option>  
+              <option value="square">SQUARE</option>  
+              <option value="sawtooth">SAWTOOTH</option>  
+              <option value="sine">SINE</option>  
+            </select>  
+          </div>  
+        </div>  
+      </div>  
+    </div>  
+  </div>
+
+  <script>  
+    // =========================  
+    // Fix summary:  
+    // 1) "selectTrack" was declared twice -> removed duplicate by consolidating into one.  
+    // 2) Guard setting changes when no track is selected (avoid errors).  
+    // 3) Canvas sizing uses integer sizes and correctly accounts for header height in editor mode.  
+    // 4) Small safety guards for file input / empty selection.  
+    // =========================
+
+    // --- AUDIO ENGINE ---  
+    class MultiSynthEngine {  
+      constructor() { this.ctx = null; this.masterGain = null; this.activeVoices = new Map(); }  
+      init() {  
+        if (this.ctx) return;  
+        this.ctx = new (window.AudioContext || window.webkitAudioContext)();  
+        this.masterGain = this.ctx.createGain();  
+        this.masterGain.gain.value = 0.15;  
+        this.masterGain.connect(this.ctx.destination);  
+      }  
+      playNote(trackIdx, note, velocity, waveType, isDrum) {  
+        if (!this.ctx) this.init();  
+        if (this.ctx.state === 'suspended') this.ctx.resume();
+
+        const key = `${trackIdx}-${note}`;  
+        if (this.activeVoices.has(key)) this.stopNote(trackIdx, note);
+
+        const freq = 440 * Math.pow(2, (note - 69) / 12);  
+        const gainVal = (velocity / 127) * 0.4;
+
+        if (isDrum) { this.playDrum(note, gainVal); return; }
+
+        const osc = this.ctx.createOscillator();  
+        const g = this.ctx.createGain();  
+        osc.type = waveType;  
+        osc.frequency.setValueAtTime(freq, this.ctx.currentTime);  
+        g.gain.setValueAtTime(0, this.ctx.currentTime);  
+        g.gain.linearRampToValueAtTime(gainVal, this.ctx.currentTime + 0.01);  
+        osc.connect(g); g.connect(this.masterGain);  
+        osc.start();  
+        this.activeVoices.set(key, { osc, g });  
+      }  
+      stopNote(trackIdx, note) {  
+        const key = `${trackIdx}-${note}`;  
+        const voice = this.activeVoices.get(key);  
+        if (voice) {  
+          const { osc, g } = voice;  
+          const releaseTime = 0.1;  
+          g.gain.cancelScheduledValues(this.ctx.currentTime);  
+          g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + releaseTime);  
+          osc.stop(this.ctx.currentTime + releaseTime);  
+          this.activeVoices.delete(key);  
+        }  
+      }  
+      playDrum(note, gainVal) {  
+        const now = this.ctx.currentTime;  
+        if (note <= 38) {  
+          const osc = this.ctx.createOscillator();  
+          const g = this.ctx.createGain();  
+          osc.frequency.setValueAtTime(150, now);  
+          osc.frequency.exponentialRampToValueAtTime(0.01, now + 0.2);  
+          g.gain.setValueAtTime(Math.min(1, gainVal * 1.5), now);  
+          g.gain.exponentialRampToValueAtTime(0.001, now + 0.2);  
+          osc.connect(g); g.connect(this.masterGain);  
+          osc.start(); osc.stop(now + 0.2);  
+        } else {  
+          const bufferSize = Math.floor(this.ctx.sampleRate * 0.1);  
+          const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);  
+          const data = buffer.getChannelData(0);  
+          for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;  
+          const noise = this.ctx.createBufferSource();  
+          noise.buffer = buffer;  
+          const g = this.ctx.createGain();  
+          g.gain.setValueAtTime(Math.min(1, gainVal * 0.7), now);  
+          g.gain.exponentialRampToValueAtTime(0.001, now + 0.1);  
+          noise.connect(g); g.connect(this.masterGain);  
+          noise.start();  
+        }  
+      }  
+      stopAll() {  
+        this.activeVoices.forEach(v => { try { v.osc.stop(); } catch (e) {} });  
+        this.activeVoices.clear();  
+      }  
+    }
+
+    // --- MIDI PARSER (Robust Version) ---  
+    class MidiParser {  
+      static parse(buffer) {  
+        const data = new Uint8Array(buffer);  
+        let pos = 0;  
+        let bpm = 120;
+
+        const readS = (l) => { let s = ''; for (let i = 0; i < l; i++) s += String.fromCharCode(data[pos++]); return s; };  
+        const readI = (l) => { let v = 0; for (let i = 0; i < l; i++) v = (v << 8) | data[pos++]; return v; };  
+        const readV = () => { let v = 0, b; do { b = data[pos++]; v = (v << 7) | (b & 0x7f); } while (b & 0x80); return v; };
+
+        if (readS(4) !== 'MThd') return null;  
+        readI(4); readI(2);  
+        const numTracks = readI(2);  
+        const timeDiv = readI(2);
+
+        const tracks = [];
+
+        for (let i = 0; i < numTracks; i++) {  
+          const head = readS(4);  
+          if (head !== 'MTrk') { // MTrk以外（XFメタデータなど）を飛ばす  
+            const len = readI(4); pos += len; continue;  
+          }
+
+          const len = readI(4), end = pos + len, notes = [];  
+          let abs = 0, active = {}, lastStatus = null;
+
+          while (pos < end) {  
+            abs += readV();  
+            let status = data[pos];  
+            if (status < 0x80) { status = lastStatus; }  
+            else { status = data[pos++]; }  
+            lastStatus = status;
+
+            const type = status & 0xf0;
+
+            if (type === 0x90) { // Note On  
+              const n = data[pos++], v = data[pos++];  
+              if (v > 0) active[n] = { s: abs, v };  
+              else if (active[n]) { notes.push({ n, start: active[n].s, dur: abs - active[n].s, v: active[n].v }); delete active[n]; }  
+            } else if (type === 0x80) { // Note Off  
+              const n = data[pos++]; pos++; // velocity unused  
+              if (active[n]) { notes.push({ n, start: active[n].s, dur: abs - active[n].s, v: active[n].v }); delete active[n]; }  
+            } else if (type === 0xc0 || type === 0xd0) pos += 1;  
+            else if (type === 0xa0 || type === 0xb0 || type === 0xe0) pos += 2;  
+            else if (status === 0xff) { // Meta Event  
+              const meta = data[pos++], mLen = readV();  
+              if (meta === 0x51 && mLen >= 3) {  
+                bpm = Math.round(60000000 / ((data[pos] << 16) | (data[pos + 1] << 8) | data[pos + 2]));  
+              }  
+              pos += mLen;  
+            } else if (status === 0xf0 || status === 0xf7) {  
+              pos += readV();  
+            } else {  
+              // Unknown: attempt to continue safely  
+            }  
+          }
+
+          if (notes.length > 0) tracks.push({ notes });  
+          pos = end;  
+        }
+
+        return { tracks, timeDiv, bpm };  
+      }  
+    }
+
+    const audio = new MultiSynthEngine();  
+    const state = {  
+      midi: null,  
+      isPlaying: false,  
+      isEditor: false,  
+      showTempo: false,  
+      currentTime: 0,  
+      lastTimestamp: 0,  
+      layouts: [],  
+      settings: [],  
+      selectedIdx: null,  
+      drag: null  
+    };
+
+    const ui = {  
+      file: document.getElementById('fileInput'),  
+      play: document.getElementById('playBtn'),  
+      stop: document.getElementById('stopBtn'),  
+      editor: document.getElementById('editorBtn'),  
+      tempo: document.getElementById('tempoViewBtn'),  
+      viz: document.getElementById('visualizer'),  
+      tempoOverlay: document.getElementById('tempoview-overlay'),  
+      tempoCanvas: document.getElementById('tempoCanvas'),  
+      panel: document.getElementById('editor-panel'),  
+      sMode: document.getElementById('setting-mode'),  
+      sColor: document.getElementById('setting-color'),  
+      sWave: document.getElementById('setting-wave'),  
+      trackUI: document.getElementById('track-controls-ui'),  
+      noTrackInfo: document.getElementById('no-track-selected')  
+    };
+
+    ui.file.onchange = async (e) => {  
+      const f = e.target.files?.[0];  
+      if (!f) return;  
+      const buf = await f.arrayBuffer();
+
+      state.midi = MidiParser.parse(buf);  
+      if (!state.midi) return;
+
+      state.currentTime = 0;  
+      state.settings = state.midi.tracks.map(() => ({ mode: 'piano', color: '#ffffff', wave: 'triangle', hits: [] }));  
+      state.selectedIdx = null;
+
+      initLayout();
+
+      ui.play.disabled = ui.stop.disabled = false;  
+      document.querySelector('.drop-zone').style.display = 'none';
+
+      deselectTrack(); // reset panel  
+      render();  
+    };
+
+    function initLayout() {  
+      if (!state.midi) return;  
+      const n = state.midi.tracks.length;  
+      const rect = ui.viz.getBoundingClientRect();  
+      const cols = Math.ceil(Math.sqrt(n));  
+      const rows = Math.ceil(n / cols);
+
+      state.layouts = state.midi.tracks.map((_, i) => ({  
+        x: (i % cols) * (rect.width / cols),  
+        y: Math.floor(i / cols) * (rect.height / rows),  
+        w: rect.width / cols,  
+        h: rect.height / rows  
+      }));
+
+      syncContainers();  
+    }
+
+    function syncContainers() {  
+      ui.viz.querySelectorAll('.track-container').forEach(c => c.remove());
+
+      const headerH = state.isEditor ? 18 : 0;
+
+      state.layouts.forEach((l, i) => {  
+        const c = document.createElement('div');  
+        c.className = 'track-container';  
+        c.style.cssText = `left:${l.x}px; top:${l.y}px; width:${l.w}px; height:${l.h}px;`;  
+        c.innerHTML = `  
+          <div class="track-header">TRK ${i + 1}</div>  
+          <canvas class="track-canvas"></canvas>  
+          <div class="resize-handle"></div>  
+        `;
+
+        c.onmousedown = (e) => {  
+          e.stopPropagation();  
+          if (state.isEditor) selectTrack(i);  
+        };
+
+        setupDrag(c, i);  
+        ui.viz.appendChild(c);
+
+        const cvs = c.querySelector('canvas');  
+        // Ensure integer sizes for crisp canvas rendering  
+        cvs.width = Math.max(1, Math.floor(l.w));  
+        cvs.height = Math.max(1, Math.floor(l.h - headerH));  
+      });
+
+      if (state.selectedIdx !== null) {  
+        ui.viz.querySelectorAll('.track-container')[state.selectedIdx]?.classList.add('selected');  
+      }  
+    }
+
+    function setupDrag(c, i) {  
+      const h = c.querySelector('.track-header');  
+      h.onmousedown = (e) => {  
+        e.stopPropagation();  
+        state.drag = { type: 'move', i, x: e.clientX, y: e.clientY, ox: state.layouts[i].x, oy: state.layouts[i].y };  
+      };
+
+      const r = c.querySelector('.resize-handle');  
+      r.onmousedown = (e) => {  
+        e.stopPropagation();  
+        state.drag = { type: 'size', i, x: e.clientX, y: e.clientY, ow: state.layouts[i].w, oh: state.layouts[i].h };  
+      };  
+    }
+
+    window.onmousemove = (e) => {  
+      if (!state.drag) return;  
+      const d = state.drag, l = state.layouts[d.i];
+
+      if (d.type === 'move') {  
+        l.x = d.ox + e.clientX - d.x;  
+        l.y = d.oy + e.clientY - d.y;  
+      } else {  
+        l.w = Math.max(40, d.ow + e.clientX - d.x);  
+        l.h = Math.max(40, d.oh + e.clientY - d.y);  
+      }
+
+      syncContainers();  
+      render();  
+    };
+
+    window.onmouseup = () => state.drag = null;
+
+    // --- Selection logic (single authoritative implementation) ---  
+    function selectTrack(i) {  
+      if (!state.midi) return;  
+      state.selectedIdx = i;
+
+      ui.viz.querySelectorAll('.track-container').forEach((c, idx) => {  
+        c.classList.toggle('selected', i === idx);  
+      });
+
+      const s = state.settings[i];  
+      ui.sMode.value = s.mode;  
+      ui.sColor.value = s.color;  
+      ui.sWave.value = s.wave;
+
+      ui.trackUI.style.display = 'block';  
+      ui.noTrackInfo.style.display = 'none';  
+    }
+
+    function deselectTrack() {  
+      state.selectedIdx = null;  
+      ui.viz.querySelectorAll('.track-container').forEach(c => c.classList.remove('selected'));  
+      ui.trackUI.style.display = 'none';  
+      ui.noTrackInfo.style.display = 'block';  
+    }
+
+    window.addEventListener('keydown', (e) => {  
+      if (e.key === 'Escape') deselectTrack();  
+    });
+
+    // Guard: do nothing if no track selected  
+    ui.sMode.onchange = (e) => {  
+      if (state.selectedIdx === null) return;  
+      state.settings[state.selectedIdx].mode = e.target.value;  
+      syncContainers(); // header height impacts canvas sizing  
+      render();  
+    };  
+    ui.sColor.oninput = (e) => {  
+      if (state.selectedIdx === null) return;  
+      state.settings[state.selectedIdx].color = e.target.value;  
+      render();  
+    };  
+    ui.sWave.onchange = (e) => {  
+      if (state.selectedIdx === null) return;  
+      state.settings[state.selectedIdx].wave = e.target.value;  
+    };
+
+    ui.play.onclick = () => {  
+      if (!state.midi) return;  
+      state.isPlaying = !state.isPlaying;  
+      ui.play.textContent = state.isPlaying ? 'PAUSE' : 'PLAY';  
+      if (state.isPlaying) {  
+        audio.init();  
+        state.lastTimestamp = performance.now();  
+        loop();  
+      }  
+    };
+
+    ui.stop.onclick = () => {  
+      state.isPlaying = false;  
+      state.currentTime = 0;  
+      ui.play.textContent = 'PLAY';  
+      audio.stopAll();  
+      render();  
+    };
+
+    ui.editor.onclick = () => {  
+      state.isEditor = !state.isEditor;  
+      document.body.classList.toggle('editor-mode-active', state.isEditor);  
+      ui.editor.classList.toggle('active');  
+      ui.panel.classList.toggle('active');  
+      setTimeout(() => { initLayout(); render(); }, 305);  
+    };
+
+    ui.tempo.onclick = () => {  
+      state.showTempo = !state.showTempo;  
+      ui.tempo.classList.toggle('active');  
+      ui.tempoOverlay.classList.toggle('active');  
+      render();  
+    };
+
+    function loop() {  
+      if (!state.isPlaying) return;
+
+      const now = performance.now();  
+      const dt = (now - state.lastTimestamp) / 1000;  
+      state.lastTimestamp = now;
+
+      const prev = state.currentTime;  
+      const tps = (state.midi.bpm / 60) * state.midi.timeDiv;  
+      state.currentTime += dt * tps;
+
+      state.midi.tracks.forEach((t, i) => {  
+        const s = state.settings[i];  
+        t.notes.forEach(n => {  
+          if (n.start >= prev && n.start < state.currentTime) {  
+            audio.playNote(i, n.n, n.v, s.wave, s.mode === 'drum');  
+            s.hits.push({ t: now, v: n.v });  
+          }  
+          if (n.start + n.dur >= prev && n.start + n.dur < state.currentTime && s.mode !== 'drum') {  
+            audio.stopNote(i, n.n);  
+          }  
+        });  
+        s.hits = s.hits.filter(h => now - h.t < 600);  
+      });
+
+      render();  
+      requestAnimationFrame(loop);  
+    }
+
+    function render() {  
+      if (!state.midi) return;
+
+      // 1小節（16分割）ごとの表示スパンを計算  
+      const tSpan = state.midi.timeDiv * 16;  
+      const viewStart = Math.floor(state.currentTime / tSpan) * tSpan;
+
+      const cvss = ui.viz.querySelectorAll('.track-canvas');
+
+      state.midi.tracks.forEach((t, i) => {  
+        const cvs = cvss[i]; if (!cvs) return;  
+        const ctx = cvs.getContext('2d');  
+        const s = state.settings[i];
+
+        // 背景を完全に黒(#000)にする  
+        ctx.fillStyle = '#000000';  
+        ctx.fillRect(0, 0, cvs.width, cvs.height);
+
+        if (s.mode === 'piano') {  
+          // ノートの描画  
+          t.notes.forEach(n => {  
+            const isVisible = (n.start + n.dur >= viewStart) && (n.start <= viewStart + tSpan);  
+            if (!isVisible) return;
+
+            const x = ((n.start - viewStart) / tSpan) * cvs.width;  
+            const w = (n.dur / tSpan) * cvs.width;
+
+            // Y軸：音の高さ（範囲を10〜110に設定）  
+            const y = cvs.height - ((n.n - 10) / 110) * cvs.height;
+
+            const hasBeenPlayed = state.currentTime >= n.start;
+
+            if (hasBeenPlayed) {  
+              ctx.fillStyle = s.color;  
+              ctx.shadowBlur = 12;  
+              ctx.shadowColor = s.color;  
+              ctx.fillRect(x, y, Math.max(2, w), 2);  
+              ctx.shadowBlur = 0;  
+            } else {  
+              ctx.fillStyle = '#626262';  
+              ctx.fillRect(x, y, Math.max(1, w), 2);  
+            }  
+          });
+
+          // エディットモード時のみ再生バー（縦の白線）を表示  
+          if (state.isEditor) {  
+            const px = ((state.currentTime - viewStart) / tSpan) * cvs.width;  
+            ctx.strokeStyle = 'rgba(255,255,255,0.4)';  
+            ctx.lineWidth = 1;  
+            ctx.beginPath();  
+            ctx.moveTo(px, 0);  
+            ctx.lineTo(px, cvs.height);  
+            ctx.stroke();  
+          }  
+        } else {  
+          // ドラム（ウェーブエフェクト）  
+          const now = performance.now();  
+          s.hits.forEach(h => {  
+            const p = (now - h.t) / 600;  
+            if (p > 1) return;
+
+            const baseSize = (h.v / 127) * (cvs.height * 0.3);  
+            const waveSize = baseSize + (p * cvs.height * 0.5);
+
+            ctx.save();  
+            ctx.translate(cvs.width / 2, cvs.height / 2);  
+            ctx.globalAlpha = 1 - p;  
+            ctx.strokeStyle = s.color;  
+            ctx.strokeRect(-baseSize / 2, -baseSize / 2, baseSize, baseSize);  
+            ctx.globalAlpha = (1 - p) * 0.5;  
+            ctx.lineWidth = 2;  
+            ctx.strokeRect(-waveSize / 2, -waveSize / 2, waveSize, waveSize);  
+            ctx.restore();  
+          });  
+        }  
+      });
+
+      if (state.showTempo) drawTempo();
+
+      document.getElementById('trackInfo').textContent = `TRACKS: ${state.midi.tracks.length}`;  
+      document.getElementById('measureInfo').textContent = `MEASURES: ${Math.floor(state.currentTime / tSpan) * 4 + 1}`;  
+      document.getElementById('bpmInfo').textContent = `BPM: ${state.midi.bpm}`;  
+    }
+
+    function drawTempo() {  
+      const ctx = ui.tempoCanvas.getContext('2d'), w = 240, h = 240;  
+      ctx.clearRect(0, 0, w, h);
+
+      const beatProgress = (state.currentTime / state.midi.timeDiv) % 4;  
+      const currentBeat = Math.floor(beatProgress);  
+      const sub = beatProgress % 1;
+
+      const easedSub = 1 - Math.pow(1 - sub, 3);
+
+      const pad = 40, size = 35;  
+      const corners = [  
+        { x: pad, y: pad },  
+        { x: w - pad - size, y: pad },  
+        { x: w - pad - size, y: h - pad - size },  
+        { x: pad, y: h - pad - size }  
+      ];
+
+      const start = corners[currentBeat];  
+      const end = corners[(currentBeat + 1) % 4];
+
+      const x = start.x + (end.x - start.x) * easedSub;  
+      const y = start.y + (end.y - start.y) * easedSub;
+
+      corners.forEach((c, i) => {  
+        ctx.strokeStyle = (i === currentBeat) ? '#fff' : '#1a1a1a';  
+        ctx.lineWidth = 1;  
+        ctx.strokeRect(c.x, c.y, size, size);  
+      });
+
+      ctx.fillStyle = '#fff';  
+      ctx.shadowBlur = 15;  
+      ctx.shadowColor = '#fff';  
+      ctx.fillRect(x, y, size, size);  
+      ctx.shadowBlur = 0;  
+    }
+
+    window.onresize = () => initLayout();
+
+    // Click 
+    ui.viz.addEventListener('mousedown', (e) => {  
+      if (!state.isEditor) return;  
+      if (e.target === ui.viz) deselectTrack();  
+    });  
+  </script>  
+</body>  
+</html>  
