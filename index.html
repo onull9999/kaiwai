@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width,initial-scale=1.0" />  
   <title>MIDI Visualizer - Complete Fix</title>  
   <style>  
-    /* スタイルは変更なし（黒背景を維持） */  
     * { margin: 0; padding: 0; box-sizing: border-box; }  
     body { background: #000; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; width: 100vw; height: 100vh; }  
     #app { width: 100%; height: 100%; display: flex; flex-direction: column; }  
@@ -15,7 +14,23 @@
     .controls button.active { background: #fff; color: #000; border-color: #fff; }  
     .controls input[type="file"] { display: none; }  
     .controls label { padding: 8px 16px; background: #000; border: 1px solid #333; cursor: pointer; font-size: 13px; border-radius: 4px; color: #fff; }  
-    .info { margin-left: auto; font-size: 11px; color: #666; display: flex; gap: 15px; }
+    .info { margin-left: auto; font-size: 11px; color: #666; display: flex; gap: 15px; align-items: center; }
+
+    /* BPM入力欄のスタイル */
+    .bpm-control { display: flex; align-items: center; gap: 5px; color: #fff; font-size: 11px; }
+    .bpm-control input[type="number"] {
+      width: 60px;
+      background: #000;
+      color: #fff;
+      border: 1px solid #333;
+      border-radius: 4px;
+      padding: 4px 6px;
+      font-size: 12px;
+      outline: none;
+    }
+    .bpm-control input[type="number"]:focus {
+      border-color: #666;
+    }
 
     #main-container { flex: 1; display: flex; overflow: hidden; position: relative; }  
     #visualizer { flex: 1; position: relative; background: #000; overflow: hidden; }
@@ -26,7 +41,8 @@
     .panel-section { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }  
     .panel-section h3 { font-size: 10px; color: #444; text-transform: uppercase; letter-spacing: 2px; border-bottom: 1px solid #222; padding-bottom: 5px; margin-bottom: 5px; }  
     .panel-section label { font-size: 11px; color: #888; }  
-    .panel-section select, .panel-section input[type="color"] { background: #000; color: #fff; border: 1px solid #333; padding: 6px; font-size: 13px; width: 100%; border-radius: 4px; }
+    .panel-section select, .panel-section input[type="color"], .panel-section input[type="range"] { background: #000; color: #fff; border: 1px solid #333; padding: 6px; font-size: 13px; width: 100%; border-radius: 4px; }
+    .panel-section input[type="range"] { padding: 2px; cursor: pointer; }
 
     .track-container { position: absolute; background: transparent; overflow: hidden; border: 1px solid transparent; }  
     .editor-mode-active .track-container { border: 1px solid #222; background: #050505; }  
@@ -59,7 +75,10 @@
       <div class="info">  
         <span id="trackInfo">TRACKS: 0</span>  
         <span id="measureInfo">: --</span>  
-        <span id="bpmInfo">BPM: --</span>  
+        <div class="bpm-control">
+          <label for="bpmInput">BPM:</label>
+          <input type="number" id="bpmInput" value="120" min="1" max="300" disabled />
+        </div>
       </div>  
     </div>
 
@@ -94,6 +113,9 @@
 
           <div class="panel-section">  
             <h3>Audio</h3>  
+            <label>VOLUME (<span id="volumeVal">100</span>%)</label>
+            <input type="range" id="setting-volume" min="0" max="1" step="0.01" value="1" />
+            
             <label>WAVEFORM</label>  
             <select id="setting-wave">  
               <option value="triangle">TRIANGLE</option>  
@@ -108,14 +130,6 @@
   </div>
 
   <script>  
-    // =========================  
-    // Fix summary:  
-    // 1) "selectTrack" was declared twice -> removed duplicate by consolidating into one.  
-    // 2) Guard setting changes when no track is selected (avoid errors).  
-    // 3) Canvas sizing uses integer sizes and correctly accounts for header height in editor mode.  
-    // 4) Small safety guards for file input / empty selection.  
-    // =========================
-
     // --- AUDIO ENGINE ---  
     class MultiSynthEngine {  
       constructor() { this.ctx = null; this.masterGain = null; this.activeVoices = new Map(); }  
@@ -126,7 +140,7 @@
         this.masterGain.gain.value = 0.15;  
         this.masterGain.connect(this.ctx.destination);  
       }  
-      playNote(trackIdx, note, velocity, waveType, isDrum) {  
+      playNote(trackIdx, note, velocity, waveType, isDrum, trackVolume = 1.0) {  
         if (!this.ctx) this.init();  
         if (this.ctx.state === 'suspended') this.ctx.resume();
 
@@ -134,7 +148,9 @@
         if (this.activeVoices.has(key)) this.stopNote(trackIdx, note);
 
         const freq = 440 * Math.pow(2, (note - 69) / 12);  
-        const gainVal = (velocity / 127) * 0.4;
+        const gainVal = (velocity / 127) * 0.4 * trackVolume;
+
+        if (gainVal <= 0) return;
 
         if (isDrum) { this.playDrum(note, gainVal); return; }
 
@@ -162,26 +178,66 @@
       }  
       playDrum(note, gainVal) {  
         const now = this.ctx.currentTime;  
-        if (note <= 38) {  
+        
+        // バスドラム (Kick): 低いピッチのノート (36以下)
+        if (note <= 36) {  
           const osc = this.ctx.createOscillator();  
           const g = this.ctx.createGain();  
-          osc.frequency.setValueAtTime(150, now);  
-          osc.frequency.exponentialRampToValueAtTime(0.01, now + 0.2);  
-          g.gain.setValueAtTime(Math.min(1, gainVal * 1.5), now);  
-          g.gain.exponentialRampToValueAtTime(0.001, now + 0.2);  
+          osc.frequency.setValueAtTime(130, now);  
+          osc.frequency.exponentialRampToValueAtTime(30, now + 0.15);  
+          g.gain.setValueAtTime(Math.min(1, gainVal * 2.0), now);  
+          g.gain.exponentialRampToValueAtTime(0.001, now + 0.15);  
           osc.connect(g); g.connect(this.masterGain);  
-          osc.start(); osc.stop(now + 0.2);  
-        } else {  
-          const bufferSize = Math.floor(this.ctx.sampleRate * 0.1);  
+          osc.start(); osc.stop(now + 0.15);  
+
+        // スネアドラム (Snare): ミドルピッチのノート (37〜40)
+        } else if (note >= 37 && note <= 40) {  
+          // スネアの胴鳴り（トーン成分）
+          const osc = this.ctx.createOscillator();  
+          const gOsc = this.ctx.createGain();  
+          osc.type = 'triangle';  
+          osc.frequency.setValueAtTime(180, now);  
+          osc.frequency.exponentialRampToValueAtTime(80, now + 0.1);  
+          gOsc.gain.setValueAtTime(gainVal * 1.2, now);  
+          gOsc.gain.exponentialRampToValueAtTime(0.001, now + 0.1);  
+          osc.connect(gOsc); gOsc.connect(this.masterGain);  
+          osc.start(); osc.stop(now + 0.1);
+
+          // スネアの響き線（ノイズ成分）
+          const bufferSize = Math.floor(this.ctx.sampleRate * 0.15);  
           const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);  
           const data = buffer.getChannelData(0);  
           for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;  
           const noise = this.ctx.createBufferSource();  
           noise.buffer = buffer;  
+          
+          const filter = this.ctx.createBiquadFilter();  
+          filter.type = 'highpass';  
+          filter.frequency.setValueAtTime(1000, now);  
+
+          const gNoise = this.ctx.createGain();  
+          gNoise.gain.setValueAtTime(gainVal * 1.5, now);  
+          gNoise.gain.exponentialRampToValueAtTime(0.001, now + 0.15);  
+          noise.connect(filter); filter.connect(gNoise); gNoise.connect(this.masterGain);  
+          noise.start();  
+
+        // ハイハット / その他パーカッション (41以上)
+        } else {  
+          const bufferSize = Math.floor(this.ctx.sampleRate * 0.05);  
+          const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);  
+          const data = buffer.getChannelData(0);  
+          for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;  
+          const noise = this.ctx.createBufferSource();  
+          noise.buffer = buffer;  
+
+          const filter = this.ctx.createBiquadFilter();  
+          filter.type = 'highpass';  
+          filter.frequency.setValueAtTime(7000, now);  
+
           const g = this.ctx.createGain();  
-          g.gain.setValueAtTime(Math.min(1, gainVal * 0.7), now);  
-          g.gain.exponentialRampToValueAtTime(0.001, now + 0.1);  
-          noise.connect(g); g.connect(this.masterGain);  
+          g.gain.setValueAtTime(Math.min(1, gainVal * 0.8), now);  
+          g.gain.exponentialRampToValueAtTime(0.001, now + 0.05);  
+          noise.connect(filter); filter.connect(g); g.connect(this.masterGain);  
           noise.start();  
         }  
       }  
@@ -211,7 +267,7 @@
 
         for (let i = 0; i < numTracks; i++) {  
           const head = readS(4);  
-          if (head !== 'MTrk') { // MTrk以外（XFメタデータなど）を飛ばす  
+          if (head !== 'MTrk') {  
             const len = readI(4); pos += len; continue;  
           }
 
@@ -232,7 +288,7 @@
               if (v > 0) active[n] = { s: abs, v };  
               else if (active[n]) { notes.push({ n, start: active[n].s, dur: abs - active[n].s, v: active[n].v }); delete active[n]; }  
             } else if (type === 0x80) { // Note Off  
-              const n = data[pos++]; pos++; // velocity unused  
+              const n = data[pos++]; pos++;  
               if (active[n]) { notes.push({ n, start: active[n].s, dur: abs - active[n].s, v: active[n].v }); delete active[n]; }  
             } else if (type === 0xc0 || type === 0xd0) pos += 1;  
             else if (type === 0xa0 || type === 0xb0 || type === 0xe0) pos += 2;  
@@ -244,8 +300,6 @@
               pos += mLen;  
             } else if (status === 0xf0 || status === 0xf7) {  
               pos += readV();  
-            } else {  
-              // Unknown: attempt to continue safely  
             }  
           }
 
@@ -277,6 +331,7 @@
       stop: document.getElementById('stopBtn'),  
       editor: document.getElementById('editorBtn'),  
       tempo: document.getElementById('tempoViewBtn'),  
+      bpm: document.getElementById('bpmInput'),
       viz: document.getElementById('visualizer'),  
       tempoOverlay: document.getElementById('tempoview-overlay'),  
       tempoCanvas: document.getElementById('tempoCanvas'),  
@@ -284,6 +339,8 @@
       sMode: document.getElementById('setting-mode'),  
       sColor: document.getElementById('setting-color'),  
       sWave: document.getElementById('setting-wave'),  
+      sVolume: document.getElementById('setting-volume'),
+      volumeVal: document.getElementById('volumeVal'),
       trackUI: document.getElementById('track-controls-ui'),  
       noTrackInfo: document.getElementById('no-track-selected')  
     };
@@ -297,17 +354,30 @@
       if (!state.midi) return;
 
       state.currentTime = 0;  
-      state.settings = state.midi.tracks.map(() => ({ mode: 'piano', color: '#ffffff', wave: 'triangle', hits: [] }));  
+      state.settings = state.midi.tracks.map(() => ({ mode: 'piano', color: '#ffffff', wave: 'triangle', volume: 1.0, hits: [] }));  
       state.selectedIdx = null;
+
+      ui.bpm.value = state.midi.bpm;
+      ui.bpm.disabled = false;
 
       initLayout();
 
       ui.play.disabled = ui.stop.disabled = false;  
       document.querySelector('.drop-zone').style.display = 'none';
 
-      deselectTrack(); // reset panel  
+      deselectTrack();  
       render();  
     };
+
+    const updateBpm = () => {
+      if (!state.midi) return;
+      let val = parseInt(ui.bpm.value, 10);
+      if (isNaN(val) || val < 1) val = 1;
+      if (val > 300) val = 300;
+      state.midi.bpm = val;
+    };
+    ui.bpm.oninput = updateBpm;
+    ui.bpm.onchange = updateBpm;
 
     function initLayout() {  
       if (!state.midi) return;  
@@ -350,7 +420,6 @@
         ui.viz.appendChild(c);
 
         const cvs = c.querySelector('canvas');  
-        // Ensure integer sizes for crisp canvas rendering  
         cvs.width = Math.max(1, Math.floor(l.w));  
         cvs.height = Math.max(1, Math.floor(l.h - headerH));  
       });
@@ -392,7 +461,6 @@
 
     window.onmouseup = () => state.drag = null;
 
-    // --- Selection logic (single authoritative implementation) ---  
     function selectTrack(i) {  
       if (!state.midi) return;  
       state.selectedIdx = i;
@@ -405,6 +473,8 @@
       ui.sMode.value = s.mode;  
       ui.sColor.value = s.color;  
       ui.sWave.value = s.wave;
+      ui.sVolume.value = s.volume !== undefined ? s.volume : 1.0;
+      ui.volumeVal.textContent = Math.round((s.volume !== undefined ? s.volume : 1.0) * 100);
 
       ui.trackUI.style.display = 'block';  
       ui.noTrackInfo.style.display = 'none';  
@@ -421,11 +491,10 @@
       if (e.key === 'Escape') deselectTrack();  
     });
 
-    // Guard: do nothing if no track selected  
     ui.sMode.onchange = (e) => {  
       if (state.selectedIdx === null) return;  
       state.settings[state.selectedIdx].mode = e.target.value;  
-      syncContainers(); // header height impacts canvas sizing  
+      syncContainers();  
       render();  
     };  
     ui.sColor.oninput = (e) => {  
@@ -436,6 +505,12 @@
     ui.sWave.onchange = (e) => {  
       if (state.selectedIdx === null) return;  
       state.settings[state.selectedIdx].wave = e.target.value;  
+    };
+    ui.sVolume.oninput = (e) => {
+      if (state.selectedIdx === null) return;
+      const val = parseFloat(e.target.value);
+      state.settings[state.selectedIdx].volume = val;
+      ui.volumeVal.textContent = Math.round(val * 100);
     };
 
     ui.play.onclick = () => {  
@@ -487,7 +562,7 @@
         const s = state.settings[i];  
         t.notes.forEach(n => {  
           if (n.start >= prev && n.start < state.currentTime) {  
-            audio.playNote(i, n.n, n.v, s.wave, s.mode === 'drum');  
+            audio.playNote(i, n.n, n.v, s.wave, s.mode === 'drum', s.volume);  
             s.hits.push({ t: now, v: n.v });  
           }  
           if (n.start + n.dur >= prev && n.start + n.dur < state.currentTime && s.mode !== 'drum') {  
@@ -504,7 +579,6 @@
     function render() {  
       if (!state.midi) return;
 
-      // 1小節（16分割）ごとの表示スパンを計算  
       const tSpan = state.midi.timeDiv * 16;  
       const viewStart = Math.floor(state.currentTime / tSpan) * tSpan;
 
@@ -515,20 +589,16 @@
         const ctx = cvs.getContext('2d');  
         const s = state.settings[i];
 
-        // 背景を完全に黒(#000)にする  
         ctx.fillStyle = '#000000';  
         ctx.fillRect(0, 0, cvs.width, cvs.height);
 
         if (s.mode === 'piano') {  
-          // ノートの描画  
           t.notes.forEach(n => {  
             const isVisible = (n.start + n.dur >= viewStart) && (n.start <= viewStart + tSpan);  
             if (!isVisible) return;
 
             const x = ((n.start - viewStart) / tSpan) * cvs.width;  
             const w = (n.dur / tSpan) * cvs.width;
-
-            // Y軸：音の高さ（範囲を10〜110に設定）  
             const y = cvs.height - ((n.n - 10) / 110) * cvs.height;
 
             const hasBeenPlayed = state.currentTime >= n.start;
@@ -545,7 +615,6 @@
             }  
           });
 
-          // エディットモード時のみ再生バー（縦の白線）を表示  
           if (state.isEditor) {  
             const px = ((state.currentTime - viewStart) / tSpan) * cvs.width;  
             ctx.strokeStyle = 'rgba(255,255,255,0.4)';  
@@ -556,7 +625,6 @@
             ctx.stroke();  
           }  
         } else {  
-          // ドラム（ウェーブエフェクト）  
           const now = performance.now();  
           s.hits.forEach(h => {  
             const p = (now - h.t) / 600;  
@@ -582,7 +650,6 @@
 
       document.getElementById('trackInfo').textContent = `TRACKS: ${state.midi.tracks.length}`;  
       document.getElementById('measureInfo').textContent = `MEASURES: ${Math.floor(state.currentTime / tSpan) * 4 + 1}`;  
-      document.getElementById('bpmInfo').textContent = `BPM: ${state.midi.bpm}`;  
     }
 
     function drawTempo() {  
@@ -624,11 +691,10 @@
 
     window.onresize = () => initLayout();
 
-    // Click 
     ui.viz.addEventListener('mousedown', (e) => {  
       if (!state.isEditor) return;  
       if (e.target === ui.viz) deselectTrack();  
     });  
   </script>  
 </body>  
-</html>  
+</html>
